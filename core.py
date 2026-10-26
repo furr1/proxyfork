@@ -376,6 +376,9 @@ class ProxyManager:
         except Exception:
             pass
 
+        # Небольшая пауза для гарантированного освобождения Wintun адаптера системой
+        time.sleep(0.5)
+
         return True, "Отключено"
 
 

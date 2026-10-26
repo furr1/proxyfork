@@ -432,7 +432,8 @@ class App(ctk.CTk):
 
         def _bg_reload():
             self.proxy_mgr.stop()
-            time.sleep(0.4)
+            # Даем Windows и драйверу Wintun время (1.2 сек) корректно освободить и закрыть сетевой адаптер tun0
+            time.sleep(1.2)
             host = self.host_entry.get().strip()
             port = int(self.port_entry.get().strip())
             user = self.user_entry.get().strip()
@@ -678,6 +679,20 @@ class App(ctk.CTk):
 
     def _tick_timer(self):
         try:
+            # Сторож (watchdog): проверяем, не упал ли фоновый процесс sing-box
+            if self.is_connected and not self.proxy_mgr.is_running:
+                self.is_connected = False
+                self.connected_time = None
+                self._set_status("error", "Сбой (туннель закрыт)")
+                self.connect_btn.configure(
+                    state="normal",
+                    text="ПОДКЛЮЧИТЬ",
+                    fg_color="#238636",
+                    hover_color="#2ea043"
+                )
+                self.log("⚠️ Фоновый процесс sing-box завершил работу или потерял адаптер.")
+                threading.Thread(target=self._update_ip_display, daemon=True).start()
+
             if self.is_connected and self.connected_time:
                 elapsed = int(time.time() - self.connected_time)
                 h = elapsed // 3600
