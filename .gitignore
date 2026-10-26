@@ -1,0 +1,23 @@
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+*.spec
+
+# User credentials and local configs (IMPORTANT: never commit proxy passwords!)
+settings.json
+config.json
+
+# PyInstaller build artifacts & heavy binaries
+build/
+dist/
+ProxyFork.exe
+
+# Binaries (downloadable via python download_core.py)
+bin/sing-box.exe
+bin/wintun.dll
+
+# IDE / OS files
+.vscode/
+.idea/
+*.log
