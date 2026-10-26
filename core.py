@@ -132,15 +132,13 @@ def generate_sing_box_config(host: str, port: int, username: str = "", password:
     # Формируем правила маршрутизации
     route_rules = [
         {
-            "action": "sniff"
-        },
-        {
-            "protocol": "dns",
+            # Перехват всех DNS-запросов (порт 53) и обработка встроенным DNS
+            "port": 53,
             "action": "hijack-dns"
         },
         {
             # Отклоняем IPv6, так как прокси поддерживает только IPv4
-            # (предотвращает зависание Telegram и мессенджеров, которые пытаются идти через IPv6)
+            # (предотвращает зависание Telegram и браузеров, которые пытаются идти через IPv6)
             "ip_version": 6,
             "action": "reject"
         },
@@ -199,9 +197,16 @@ def generate_sing_box_config(host: str, port: int, username: str = "", password:
             "servers": [
                 {
                     "tag": "dns-remote",
-                    "type": "tcp",
+                    "type": "https",
                     "server": "1.1.1.1",
-                    "server_port": 53,
+                    "path": "/dns-query",
+                    "detour": "proxy-out"
+                },
+                {
+                    "tag": "dns-backup",
+                    "type": "https",
+                    "server": "8.8.8.8",
+                    "path": "/dns-query",
                     "detour": "proxy-out"
                 },
                 {
