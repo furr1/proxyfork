@@ -45,12 +45,16 @@ class App(ctk.CTk):
         self.settings = core.load_settings()
         self.excluded_processes = list(self.settings.get("excluded_processes", []))
         self.is_connected = False
+        self.connected_time = None
         self.tray_icon = None
         self.password_visible = False
 
         self._build_ui()
         self._load_saved_values()
         self._refresh_exclusions_ui()
+
+        # Запуск таймера аптайма
+        self._tick_timer()
 
         # Запуск иконки в трее в фоновом потоке
         self._init_tray()
@@ -105,13 +109,21 @@ class App(ctk.CTk):
         )
         self.status_text.pack(side="left", pady=6)
 
+        self.timer_label = ctk.CTkLabel(
+            self.status_badge,
+            text="⏱️ 00:00:00",
+            font=ctk.CTkFont(family="Consolas", size=12, weight="bold"),
+            text_color="#8b949e"
+        )
+        self.timer_label.pack(side="right", padx=(4, 12), pady=6)
+
         self.proto_badge = ctk.CTkLabel(
             self.status_badge,
-            text="SOCKS5 + UDP",
+            text="SOCKS5 + TUN",
             font=ctk.CTkFont(size=11),
             text_color="#58a6ff"
         )
-        self.proto_badge.pack(side="right", padx=12, pady=6)
+        self.proto_badge.pack(side="right", padx=(8, 4), pady=6)
 
         # 2. Вкладки (Подключение / Исключения)
         self.tabview = ctk.CTkTabview(
@@ -344,6 +356,18 @@ class App(ctk.CTk):
         )
         self.excl_count_label.pack(side="left")
 
+        self.apply_excl_btn = ctk.CTkButton(
+            footer_frame,
+            text="🔄 Применить сейчас",
+            width=150,
+            height=28,
+            font=ctk.CTkFont(size=11, weight="bold"),
+            fg_color="#1f6feb",
+            hover_color="#388bfd",
+            command=self._apply_exclusions_live
+        )
+        self.apply_excl_btn.pack(side="right", padx=(6, 0))
+
         clear_btn = ctk.CTkButton(
             footer_frame,
             text="Очистить всё",
@@ -385,7 +409,7 @@ class App(ctk.CTk):
             self._refresh_exclusions_ui()
             self.log(f"Добавлено исключение: {proc_name}")
             if self.is_connected:
-                self.log("Внимание: чтобы применить новое исключение, переподключитесь.")
+                self.log("💡 Нажмите '🔄 Применить сейчас' внизу вкладки для обновления правил.")
 
     def _remove_exclusion(self, proc_name: str):
         self.excluded_processes = [p for p in self.excluded_processes if p.lower() != proc_name.lower()]
@@ -393,7 +417,65 @@ class App(ctk.CTk):
         self._refresh_exclusions_ui()
         self.log(f"Удалено исключение: {proc_name}")
         if self.is_connected:
-            self.log("Внимание: чтобы применить удаление исключения, переподключитесь.")
+            self.log("💡 Нажмите '🔄 Применить сейчас' для применения изменений.")
+
+    def _apply_exclusions_live(self):
+        self._save_current_values()
+        if not self.is_connected:
+            self.log("Исключения сохранены. Они будут активны при следующем подключении.")
+            return
+
+        self.log("--- Перезапуск туннеля для применения обновленных исключений ---")
+        self.connect_btn.configure(state="disabled", text="ПРИМЕНЕНИЕ...")
+        self.apply_excl_btn.configure(state="disabled", text="Применение...")
+        self._set_status("connecting", "Обновление правил...")
+
+        def _bg_reload():
+            self.proxy_mgr.stop()
+            time.sleep(0.4)
+            host = self.host_entry.get().strip()
+            port = int(self.port_entry.get().strip())
+            user = self.user_entry.get().strip()
+            pwd = self.pass_entry.get().strip()
+            ok, msg = self.proxy_mgr.start(
+                host=host,
+                port=port,
+                username=user,
+                password=pwd,
+                excluded_processes=self.excluded_processes,
+                log_cb=self.log
+            )
+            if ok:
+                self.is_connected = True
+                self._set_status("connected", "Подключено (Вся система)")
+                self.after(0, lambda: self.connect_btn.configure(
+                    state="normal",
+                    text="ОТКЛЮЧИТЬ",
+                    fg_color="#da3633",
+                    hover_color="#b62324"
+                ))
+                self.after(0, lambda: self.apply_excl_btn.configure(
+                    state="normal",
+                    text="🔄 Применить сейчас"
+                ))
+                self.log("Новые исключения успешно применены! Трафик перенаправлен.")
+            else:
+                self.is_connected = False
+                self.connected_time = None
+                self._set_status("error", "Ошибка перезапуска")
+                self.after(0, lambda: self.connect_btn.configure(
+                    state="normal",
+                    text="ПОДКЛЮЧИТЬ",
+                    fg_color="#238636",
+                    hover_color="#2ea043"
+                ))
+                self.after(0, lambda: self.apply_excl_btn.configure(
+                    state="normal",
+                    text="🔄 Применить сейчас"
+                ))
+                self.log(f"Ошибка перезапуска: {msg}")
+
+        threading.Thread(target=_bg_reload, daemon=True).start()
 
     def _clear_all_exclusions(self):
         if not self.excluded_processes:
@@ -549,6 +631,7 @@ class App(ctk.CTk):
             )
             if success:
                 self.is_connected = True
+                self.connected_time = time.time()
                 self._set_status("connected", "Подключено (Вся система)")
                 self.after(0, lambda: self.connect_btn.configure(
                     state="normal",
@@ -560,6 +643,7 @@ class App(ctk.CTk):
                 self._update_ip_display()
             else:
                 self.is_connected = False
+                self.connected_time = None
                 self._set_status("error", "Ошибка запуска")
                 self.after(0, lambda: self.connect_btn.configure(
                     state="normal",
@@ -579,6 +663,7 @@ class App(ctk.CTk):
         def _bg_disconnect():
             self.proxy_mgr.stop()
             self.is_connected = False
+            self.connected_time = None
             self._set_status("disconnected", "Отключено")
             self.after(0, lambda: self.connect_btn.configure(
                 state="normal",
@@ -590,6 +675,25 @@ class App(ctk.CTk):
             self._update_ip_display()
 
         threading.Thread(target=_bg_disconnect, daemon=True).start()
+
+    def _tick_timer(self):
+        try:
+            if self.is_connected and self.connected_time:
+                elapsed = int(time.time() - self.connected_time)
+                h = elapsed // 3600
+                m = (elapsed % 3600) // 60
+                s = elapsed % 60
+                time_str = f"⏱️ {h:02d}:{m:02d}:{s:02d}"
+                self.timer_label.configure(text=time_str, text_color="#3fb950")
+                if self.tray_icon:
+                    self.tray_icon.title = f"ProxyFork ({h:02d}:{m:02d}:{s:02d})"
+            else:
+                self.timer_label.configure(text="⏱️ 00:00:00", text_color="#8b949e")
+                if self.tray_icon:
+                    self.tray_icon.title = "ProxyFork (Отключено)"
+        except Exception:
+            pass
+        self.after(1000, self._tick_timer)
 
     def _init_tray(self):
         menu = pystray.Menu(
