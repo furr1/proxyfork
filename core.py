@@ -5,6 +5,7 @@ import ctypes
 import subprocess
 import threading
 import time
+import re
 import requests
 
 if getattr(sys, 'frozen', False):
@@ -156,21 +157,27 @@ def generate_sing_box_config(host: str, port: int, username: str = "", password:
     if excluded_processes:
         cleaned_procs = []
         cleaned_paths = []
+        regex_patterns = []
         for p in excluded_processes:
             p = str(p).strip()
             if not p:
                 continue
             if "\\" in p or "/" in p:
                 cleaned_paths.append(p)
-                base = os.path.basename(p).lower()
-                if base and base not in cleaned_procs:
-                    cleaned_procs.append(base)
+                base = os.path.basename(p)
+                for cand in (base, base.lower(), base.capitalize()):
+                    if cand and cand not in cleaned_procs:
+                        cleaned_procs.append(cand)
             else:
-                name = p.lower()
-                if not name.endswith(".exe"):
-                    name += ".exe"
-                if name not in cleaned_procs:
-                    cleaned_procs.append(name)
+                raw_name = p
+                if not raw_name.lower().endswith(".exe"):
+                    raw_name += ".exe"
+                for cand in (raw_name, raw_name.lower(), raw_name.capitalize()):
+                    if cand not in cleaned_procs:
+                        cleaned_procs.append(cand)
+                # Добавляем также нечувствительный к регистру regex
+                stem = re.escape(os.path.splitext(raw_name)[0])
+                regex_patterns.append(f"(?i).*{stem}.*")
 
         if cleaned_procs:
             route_rules.append({
@@ -180,6 +187,11 @@ def generate_sing_box_config(host: str, port: int, username: str = "", password:
         if cleaned_paths:
             route_rules.append({
                 "process_path": cleaned_paths,
+                "outbound": "direct"
+            })
+        if regex_patterns:
+            route_rules.append({
+                "process_path_regex": regex_patterns,
                 "outbound": "direct"
             })
 
@@ -217,8 +229,7 @@ def generate_sing_box_config(host: str, port: int, username: str = "", password:
                 }
             ],
             "final": "dns-remote",
-            "strategy": "ipv4_only",
-            "independent_cache": True
+            "strategy": "ipv4_only"
         },
         "inbounds": [
             {
