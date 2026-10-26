@@ -24,7 +24,7 @@
 
 ## 🚀 Быстрый старт (для пользователей)
 
-1. Скачайте последний релиз **`ProxyFork.exe`** из раздела [Releases](https://github.com/).
+1. Скачайте последний релиз **`ProxyFork.exe`** из раздела **[Releases](https://github.com/furr1/proxyfork/releases)**.
 2. Запустите `ProxyFork.exe` (подтвердите запрос прав администратора UAC).
 3. Введите данные вашего SOCKS5-прокси (Хост, Порт, Логин, Пароль).
 4. *(Опционально)* На вкладке «Исключения» добавьте программы, которые должны работать напрямую.
@@ -42,7 +42,7 @@
 
 1. Клонируйте репозиторий:
    ```bash
-   git clone https://github.com/your-username/proxyfork.git
+   git clone https://github.com/furr1/proxyfork.git
    cd proxyfork
    ```
 
