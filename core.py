@@ -122,7 +122,8 @@ def generate_sing_box_config(host: str, port: int, username: str = "", password:
         "type": "socks",
         "tag": "proxy-out",
         "server": host.strip(),
-        "server_port": int(port)
+        "server_port": int(port),
+        "tcp_keep_alive": "15s"
     }
     if username.strip():
         socks_outbound["username"] = username.strip()
@@ -216,7 +217,8 @@ def generate_sing_box_config(host: str, port: int, username: str = "", password:
                 }
             ],
             "final": "dns-remote",
-            "strategy": "ipv4_only"
+            "strategy": "ipv4_only",
+            "independent_cache": True
         },
         "inbounds": [
             {
@@ -227,7 +229,8 @@ def generate_sing_box_config(host: str, port: int, username: str = "", password:
                 "mtu": 1500,
                 "auto_route": True,
                 "strict_route": False,
-                "stack": "mixed"
+                "stack": "mixed",
+                "endpoint_independent_nat": True
             }
         ],
         "outbounds": [
@@ -242,6 +245,12 @@ def generate_sing_box_config(host: str, port: int, username: str = "", password:
             "rules": route_rules,
             "auto_detect_interface": True,
             "final": "proxy-out"
+        },
+        "experimental": {
+            "cache_file": {
+                "enabled": True,
+                "path": os.path.join(DATA_DIR, "cache.db")
+            }
         }
     }
     return config
