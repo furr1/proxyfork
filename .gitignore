@@ -2,7 +2,6 @@
 __pycache__/
 *.py[cod]
 *$py.class
-*.spec
 
 # User credentials and local configs (IMPORTANT: never commit proxy passwords!)
 settings.json
