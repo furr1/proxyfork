@@ -137,6 +137,19 @@ def generate_sing_box_config(host: str, port: int, username: str = "", password:
         {
             "protocol": "dns",
             "action": "hijack-dns"
+        },
+        {
+            # Отклоняем IPv6, так как прокси поддерживает только IPv4
+            # (предотвращает зависание Telegram и мессенджеров, которые пытаются идти через IPv6)
+            "ip_version": 6,
+            "action": "reject"
+        },
+        {
+            # Отклоняем QUIC (UDP 443) в браузерах, чтобы они мгновенно переключались на быстрый TCP
+            # без 3-5 секундных таймаутов на прокси
+            "network": "udp",
+            "port": [443],
+            "action": "reject"
         }
     ]
 
@@ -205,7 +218,8 @@ def generate_sing_box_config(host: str, port: int, username: str = "", password:
                 "type": "tun",
                 "tag": "tun-in",
                 "interface_name": "tun0",
-                "address": ["172.28.0.1/30", "fdfe:dcba:9876::1/126"],
+                "address": ["172.28.0.1/30"],
+                "mtu": 1500,
                 "auto_route": True,
                 "strict_route": False,
                 "stack": "mixed"
