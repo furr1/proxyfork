@@ -162,6 +162,22 @@ def generate_sing_box_config(host: str, port: int, username: str = "", password:
             p = str(p).strip()
             if not p:
                 continue
+
+            lower_p = p.lower()
+            # Автоматически расширяем связанные процессы для популярных инструментов
+            if "happ" in lower_p:
+                for sub in ("happ.exe", "happd.exe", "xray.exe"):
+                    for cand in (sub, sub.lower(), sub.capitalize(), sub.upper()):
+                        if cand not in cleaned_procs:
+                            cleaned_procs.append(cand)
+                regex_patterns.append("(?i).*(?:happ|xray).*")
+            elif "telegram" in lower_p:
+                for sub in ("telegram.exe", "tgwsproxy_windows.exe", "tgwsproxy.exe"):
+                    for cand in (sub, sub.lower(), sub.capitalize()):
+                        if cand not in cleaned_procs:
+                            cleaned_procs.append(cand)
+                regex_patterns.append("(?i).*(?:telegram|tgwsproxy).*")
+
             if "\\" in p or "/" in p:
                 cleaned_paths.append(p)
                 base = os.path.basename(p)
@@ -175,7 +191,6 @@ def generate_sing_box_config(host: str, port: int, username: str = "", password:
                 for cand in (raw_name, raw_name.lower(), raw_name.capitalize()):
                     if cand not in cleaned_procs:
                         cleaned_procs.append(cand)
-                # Добавляем также нечувствительный к регистру regex
                 stem = re.escape(os.path.splitext(raw_name)[0])
                 regex_patterns.append(f"(?i).*{stem}.*")
 
@@ -210,16 +225,16 @@ def generate_sing_box_config(host: str, port: int, username: str = "", password:
             "servers": [
                 {
                     "tag": "dns-remote",
-                    "type": "https",
+                    "type": "tcp",
                     "server": "1.1.1.1",
-                    "path": "/dns-query",
+                    "server_port": 53,
                     "detour": "proxy-out"
                 },
                 {
                     "tag": "dns-backup",
-                    "type": "https",
+                    "type": "tcp",
                     "server": "8.8.8.8",
-                    "path": "/dns-query",
+                    "server_port": 53,
                     "detour": "proxy-out"
                 },
                 {
@@ -283,6 +298,27 @@ class ProxyManager:
             return False, f"Файл sing-box.exe не найден по пути: {SING_BOX_EXE}"
 
         self.log_callback = log_cb
+
+        # Гарантируем отсутствие зависших экземпляров перед стартом
+        try:
+            subprocess.run(["taskkill", "/F", "/IM", "sing-box.exe"], capture_output=True, creationflags=subprocess.CREATE_NO_WINDOW)
+            time.sleep(0.3)
+        except Exception:
+            pass
+
+        # Проверка на наличие других активных L3 TUN/VPN адаптеров (Happ, Xray, WireGuard, Outline и др.)
+        try:
+            ps_chk = subprocess.run(
+                ["powershell", "-NoProfile", "-Command", "Get-NetAdapter | Where-Object Status -eq Up | Select-Object -ExpandProperty Name"],
+                capture_output=True, text=True, creationflags=subprocess.CREATE_NO_WINDOW
+            )
+            up_adapters = [a.strip().lower() for a in ps_chk.stdout.splitlines() if a.strip()]
+            conflicts = [a for a in up_adapters if any(k in a for k in ["happ", "xray", "sing-tun", "wireguard", "outline"])]
+            if conflicts and log_cb:
+                log_cb(f"⚠️ ВНИМАНИЕ: Обнаружен другой активный VPN адаптер: {', '.join(conflicts)}!")
+                log_cb("⚠️ Два системных TUN-прокси не могут работать одновременно. Пожалуйста, отключите другой VPN перед запуском!")
+        except Exception:
+            pass
 
         try:
             config = generate_sing_box_config(host, port, username, password, excluded_processes)
