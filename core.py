@@ -2,10 +2,12 @@ import os
 import sys
 import json
 import ctypes
+from ctypes import wintypes
 import subprocess
 import threading
 import time
 import re
+import urllib.request
 import requests
 
 if getattr(sys, 'frozen', False):
@@ -276,10 +278,23 @@ def generate_sing_box_config(host: str, port: int, username: str = "", password:
             "cache_file": {
                 "enabled": True,
                 "path": os.path.join(DATA_DIR, "cache.db")
+            },
+            "clash_api": {
+                "external_controller": "127.0.0.1:64239"
             }
         }
     }
     return config
+
+
+def format_speed(bps: int) -> str:
+    """Форматирует байты в секунду в читаемый вид (B/s, KB/s, MB/s)."""
+    if bps < 1024:
+        return f"{bps} B/s"
+    elif bps < 1024 * 1024:
+        return f"{bps / 1024:.1f} KB/s"
+    else:
+        return f"{bps / (1024 * 1024):.1f} MB/s"
 
 
 class ProxyManager:
@@ -288,7 +303,10 @@ class ProxyManager:
         self.process: subprocess.Popen | None = None
         self.is_running = False
         self.log_callback = None
+        self.speed_callback = None
         self._reader_thread = None
+        self._traffic_thread = None
+        self._stop_traffic = False
 
     def start(self, host: str, port: int, username: str = "", password: str = "", excluded_processes: list = None, log_cb=None) -> tuple[bool, str]:
         if self.is_running:
@@ -298,6 +316,7 @@ class ProxyManager:
             return False, f"Файл sing-box.exe не найден по пути: {SING_BOX_EXE}"
 
         self.log_callback = log_cb
+        self._stop_traffic = False
 
         # Гарантируем отсутствие зависших экземпляров перед стартом
         try:
@@ -337,7 +356,7 @@ class ProxyManager:
                 err_msg = check_res.stderr.strip() or check_res.stdout.strip()
                 return False, f"Ошибка конфигурации: {err_msg}"
 
-            # Запуск sing-box в скрытом фоновом процессе
+            # Запуск sing-box в скрытом фоновом процессе с поддержкой мягких сигналов (CREATE_NEW_PROCESS_GROUP)
             startupinfo = subprocess.STARTUPINFO()
             startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
             startupinfo.wShowWindow = subprocess.SW_HIDE
@@ -350,13 +369,17 @@ class ProxyManager:
                 bufsize=1,
                 cwd=BIN_DIR,
                 startupinfo=startupinfo,
-                creationflags=subprocess.CREATE_NO_WINDOW
+                creationflags=subprocess.CREATE_NO_WINDOW | subprocess.CREATE_NEW_PROCESS_GROUP
             )
             self.is_running = True
 
             # Поток чтения логов
             self._reader_thread = threading.Thread(target=self._read_logs, daemon=True)
             self._reader_thread.start()
+
+            # Поток считывания скорости сети в реальном времени
+            self._traffic_thread = threading.Thread(target=self._read_traffic, daemon=True)
+            self._traffic_thread.start()
 
             # Даем секунду на проверку, не упал ли сразу
             time.sleep(1.0)
@@ -369,6 +392,29 @@ class ProxyManager:
         except Exception as e:
             self.is_running = False
             return False, f"Ошибка запуска: {str(e)}"
+
+    def _read_traffic(self):
+        """Считывает скорость трафика в реальном времени из clash_api."""
+        time.sleep(1.2)
+        url = "http://127.0.0.1:64239/traffic"
+        while self.is_running and not self._stop_traffic:
+            try:
+                req = urllib.request.Request(url, headers={"User-Agent": "ProxyFork"})
+                with urllib.request.urlopen(req, timeout=3) as resp:
+                    for line in resp:
+                        if self._stop_traffic or not self.is_running:
+                            break
+                        line_str = line.decode("utf-8", errors="ignore").strip()
+                        if line_str and self.speed_callback:
+                            try:
+                                data = json.loads(line_str)
+                                self.speed_callback(data.get("up", 0), data.get("down", 0))
+                            except Exception:
+                                pass
+            except Exception:
+                if self._stop_traffic or not self.is_running:
+                    break
+                time.sleep(1.0)
 
     def _read_logs(self):
         try:
@@ -385,19 +431,26 @@ class ProxyManager:
             self.is_running = False
 
     def stop(self) -> tuple[bool, str]:
+        self._stop_traffic = True
         if not self.process:
             self.is_running = False
             return True, "Не запущено"
 
         try:
-            self.process.terminate()
+            # Мягкая остановка sing-box через GenerateConsoleCtrlEvent (CTRL_BREAK_EVENT)
+            # Это дает sing-box возможность штатно закрыть адаптер Wintun и очистить маршруты Windows за ~0.05 сек.
+            ctypes.windll.kernel32.GenerateConsoleCtrlEvent(1, self.process.pid)
             try:
-                self.process.wait(timeout=3)
+                self.process.wait(timeout=2.0)
             except subprocess.TimeoutExpired:
-                self.process.kill()
-                self.process.wait(timeout=2)
+                self.process.terminate()
+                self.process.wait(timeout=1.0)
         except Exception as e:
             print(f"Error terminating process: {e}")
+            try:
+                self.process.kill()
+            except Exception:
+                pass
         finally:
             self.process = None
             self.is_running = False
@@ -411,9 +464,6 @@ class ProxyManager:
             )
         except Exception:
             pass
-
-        # Небольшая пауза для гарантированного освобождения Wintun адаптера системой
-        time.sleep(0.5)
 
         return True, "Отключено"
 

@@ -48,6 +48,8 @@ class App(ctk.CTk):
         self.connected_time = None
         self.tray_icon = None
         self.password_visible = False
+        self.current_speed_str = "↓ 0 B/s  ↑ 0 B/s"
+        self.proxy_mgr.speed_callback = self._on_speed_update
 
         self._build_ui()
         self._load_saved_values()
@@ -238,6 +240,25 @@ class App(ctk.CTk):
         )
         self.ip_value_label.pack(anchor="w")
 
+        # Скорость сети в реальном времени
+        speed_box = ctk.CTkFrame(ip_inner, fg_color="transparent")
+        speed_box.pack(side="right", padx=(0, 10))
+
+        ctk.CTkLabel(
+            speed_box,
+            text="СКОРОСТЬ СЕТИ",
+            font=ctk.CTkFont(size=10, weight="bold"),
+            text_color="#8b949e"
+        ).pack(anchor="e")
+
+        self.speed_label = ctk.CTkLabel(
+            speed_box,
+            text="↓ 0 B/s  ↑ 0 B/s",
+            font=ctk.CTkFont(family="Consolas", size=12, weight="bold"),
+            text_color="#8b949e"
+        )
+        self.speed_label.pack(anchor="e")
+
         self.refresh_ip_btn = ctk.CTkButton(
             ip_inner,
             text="🔄",
@@ -247,7 +268,7 @@ class App(ctk.CTk):
             hover_color="#3c444d",
             command=lambda: threading.Thread(target=self._update_ip_display, daemon=True).start()
         )
-        self.refresh_ip_btn.pack(side="right")
+        self.refresh_ip_btn.pack(side="right", padx=(0, 10))
 
         # Логи
         ctk.CTkLabel(
@@ -656,6 +677,17 @@ class App(ctk.CTk):
 
         threading.Thread(target=_bg_connect, daemon=True).start()
 
+    def _on_speed_update(self, up_bytes: int, down_bytes: int):
+        up_str = core.format_speed(up_bytes)
+        down_str = core.format_speed(down_bytes)
+        self.current_speed_str = f"↓ {down_str}  ↑ {up_str}"
+        def _apply():
+            if self.is_connected:
+                self.speed_label.configure(text=self.current_speed_str, text_color="#3fb950")
+            else:
+                self.speed_label.configure(text="↓ 0 B/s  ↑ 0 B/s", text_color="#8b949e")
+        self.after(0, _apply)
+
     def _disconnect(self):
         self.connect_btn.configure(state="disabled", text="ОТКЛЮЧЕНИЕ...")
         self._set_status("connecting", "Отключение TUN...")
@@ -665,6 +697,7 @@ class App(ctk.CTk):
             self.proxy_mgr.stop()
             self.is_connected = False
             self.connected_time = None
+            self.current_speed_str = "↓ 0 B/s  ↑ 0 B/s"
             self._set_status("disconnected", "Отключено")
             self.after(0, lambda: self.connect_btn.configure(
                 state="normal",
@@ -672,6 +705,7 @@ class App(ctk.CTk):
                 fg_color="#238636",
                 hover_color="#2ea043"
             ))
+            self.after(0, lambda: self.speed_label.configure(text="↓ 0 B/s  ↑ 0 B/s", text_color="#8b949e"))
             self.log("TUN интерфейс отключен. Исходные маршруты восстановлены.")
             self._update_ip_display()
 
@@ -683,6 +717,7 @@ class App(ctk.CTk):
             if self.is_connected and not self.proxy_mgr.is_running:
                 self.is_connected = False
                 self.connected_time = None
+                self.current_speed_str = "↓ 0 B/s  ↑ 0 B/s"
                 self._set_status("error", "Сбой (туннель закрыт)")
                 self.connect_btn.configure(
                     state="normal",
@@ -690,6 +725,7 @@ class App(ctk.CTk):
                     fg_color="#238636",
                     hover_color="#2ea043"
                 )
+                self.speed_label.configure(text="↓ 0 B/s  ↑ 0 B/s", text_color="#8b949e")
                 self.log("⚠️ Фоновый процесс sing-box завершил работу или потерял адаптер.")
                 threading.Thread(target=self._update_ip_display, daemon=True).start()
 
@@ -701,9 +737,10 @@ class App(ctk.CTk):
                 time_str = f"⏱️ {h:02d}:{m:02d}:{s:02d}"
                 self.timer_label.configure(text=time_str, text_color="#3fb950")
                 if self.tray_icon:
-                    self.tray_icon.title = f"ProxyFork ({h:02d}:{m:02d}:{s:02d})"
+                    self.tray_icon.title = f"ProxyFork ({h:02d}:{m:02d}:{s:02d}) {self.current_speed_str}"
             else:
                 self.timer_label.configure(text="⏱️ 00:00:00", text_color="#8b949e")
+                self.speed_label.configure(text="↓ 0 B/s  ↑ 0 B/s", text_color="#8b949e")
                 if self.tray_icon:
                     self.tray_icon.title = "ProxyFork (Отключено)"
         except Exception:
