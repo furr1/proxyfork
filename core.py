@@ -290,8 +290,7 @@ def generate_sing_box_config(host: str, port: int, username: str = "", password:
                     "tag": "dns-direct",
                     "type": "udp",
                     "server": "77.88.8.8",
-                    "server_port": 53,
-                    "detour": "direct"
+                    "server_port": 53
                 }
             ],
             "rules": dns_rules,
