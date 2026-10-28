@@ -75,6 +75,7 @@ def load_settings() -> dict:
         "password": "",
         "auto_connect": False,
         "minimize_to_tray": True,
+        "bypass_ru": True,
         "excluded_processes": []
     }
 
@@ -118,8 +119,41 @@ def save_settings(settings: dict):
         print(f"Error saving settings: {e}")
 
 
-def generate_sing_box_config(host: str, port: int, username: str = "", password: str = "", excluded_processes: list = None) -> dict:
-    """Генерирует конфигурацию sing-box 1.14 для TUN режима со всеми приложениями, UDP и списком исключений."""
+RU_DOMAIN_SUFFIXES = [
+    ".ru",
+    ".рф",
+    ".su",
+    ".xn--p1ai",
+    "yandex.ru",
+    "ya.ru",
+    "yandex.net",
+    "yastatic.net",
+    "vk.com",
+    "vkvideo.ru",
+    "userapi.com",
+    "vk-portal.net",
+    "dzen.ru",
+    "kinopoisk.ru",
+    "rutube.ru",
+    "mail.ru",
+    "ok.ru",
+    "my.com",
+    "avito.ru",
+    "ozon.ru",
+    "wildberries.ru",
+    "gosuslugi.ru",
+    "sberbank.ru",
+    "sber.ru",
+    "t-bank.ru",
+    "tinkoff.ru",
+    "alfabank.ru",
+    "vtb.ru",
+    "monwave.ru",
+]
+
+
+def generate_sing_box_config(host: str, port: int, username: str = "", password: str = "", excluded_processes: list = None, bypass_ru: bool = True) -> dict:
+    """Генерирует конфигурацию sing-box 1.14 для TUN режима со всеми приложениями, UDP, списком исключений и обходом РФ."""
     
     socks_outbound = {
         "type": "socks",
@@ -154,6 +188,13 @@ def generate_sing_box_config(host: str, port: int, username: str = "", password:
             "action": "reject"
         }
     ]
+
+    # Если включен обход РФ, направляем российские домены и сервисы напрямую (без капч и на полной скорости)
+    if bypass_ru:
+        route_rules.append({
+            "domain_suffix": RU_DOMAIN_SUFFIXES,
+            "outbound": "direct"
+        })
 
     # Добавляем список процессов-исключений (идут напрямую)
     if excluded_processes:
@@ -218,6 +259,13 @@ def generate_sing_box_config(host: str, port: int, username: str = "", password:
         "outbound": "direct"
     })
 
+    dns_rules = []
+    if bypass_ru:
+        dns_rules.append({
+            "domain_suffix": RU_DOMAIN_SUFFIXES,
+            "server": "dns-direct"
+        })
+
     config = {
         "log": {
             "level": "info",
@@ -245,6 +293,7 @@ def generate_sing_box_config(host: str, port: int, username: str = "", password:
                     "detour": "direct"
                 }
             ],
+            "rules": dns_rules,
             "final": "dns-remote",
             "strategy": "ipv4_only"
         },
@@ -257,7 +306,7 @@ def generate_sing_box_config(host: str, port: int, username: str = "", password:
                 "mtu": 1500,
                 "auto_route": True,
                 "strict_route": False,
-                "stack": "mixed",
+                "stack": "gvisor",
                 "endpoint_independent_nat": True
             }
         ],
@@ -308,7 +357,7 @@ class ProxyManager:
         self._traffic_thread = None
         self._stop_traffic = False
 
-    def start(self, host: str, port: int, username: str = "", password: str = "", excluded_processes: list = None, log_cb=None) -> tuple[bool, str]:
+    def start(self, host: str, port: int, username: str = "", password: str = "", excluded_processes: list = None, bypass_ru: bool = True, log_cb=None) -> tuple[bool, str]:
         if self.is_running:
             return True, "Уже запущено"
 
@@ -340,7 +389,7 @@ class ProxyManager:
             pass
 
         try:
-            config = generate_sing_box_config(host, port, username, password, excluded_processes)
+            config = generate_sing_box_config(host, port, username, password, excluded_processes, bypass_ru=bypass_ru)
             with open(CONFIG_PATH, "w", encoding="utf-8") as f:
                 json.dump(config, f, indent=2, ensure_ascii=False)
 

@@ -31,7 +31,7 @@ class App(ctk.CTk):
         super().__init__()
 
         self.title("ProxyFork - System-wide TUN Proxy")
-        self.geometry("520x680")
+        self.geometry("520x710")
         self.resizable(False, False)
 
         icon_path = core.ICON_PATH
@@ -193,14 +193,27 @@ class App(ctk.CTk):
         )
         self.toggle_pass_btn.pack(side="right")
 
-        # Чекбокс трея
+        # Опции (Обход РФ и Трей)
+        options_frame = ctk.CTkFrame(self.tab_conn, fg_color="transparent")
+        options_frame.pack(fill="x", padx=10, pady=(0, 10))
+
+        self.bypass_ru_switch = ctk.CTkSwitch(
+            options_frame,
+            text="🇷🇺 Сайты РФ (.ru, Яндекс, банки) напрямую",
+            font=ctk.CTkFont(size=12, weight="bold"),
+            text_color="#c9d1d9",
+            progress_color="#238636",
+            command=self._on_bypass_ru_toggle
+        )
+        self.bypass_ru_switch.pack(anchor="w", pady=(0, 6))
+
         self.tray_checkbox = ctk.CTkCheckBox(
-            self.tab_conn,
+            options_frame,
             text="Сворачивать в системный трей при закрытии",
             font=ctk.CTkFont(size=12),
-            text_color="#c9d1d9"
+            text_color="#8b949e"
         )
-        self.tray_checkbox.pack(anchor="w", padx=10, pady=(0, 10))
+        self.tray_checkbox.pack(anchor="w")
 
         # Кнопка ПОДКЛЮЧИТЬ
         self.connect_btn = ctk.CTkButton(
@@ -459,12 +472,14 @@ class App(ctk.CTk):
             port = int(self.port_entry.get().strip())
             user = self.user_entry.get().strip()
             pwd = self.pass_entry.get().strip()
+            bypass_ru = bool(self.bypass_ru_switch.get())
             ok, msg = self.proxy_mgr.start(
                 host=host,
                 port=port,
                 username=user,
                 password=pwd,
                 excluded_processes=self.excluded_processes,
+                bypass_ru=bypass_ru,
                 log_cb=self.log
             )
             if ok:
@@ -564,6 +579,11 @@ class App(ctk.CTk):
         self.user_entry.insert(0, self.settings.get("username", ""))
         self.pass_entry.insert(0, self.settings.get("password", ""))
 
+        if self.settings.get("bypass_ru", True):
+            self.bypass_ru_switch.select()
+        else:
+            self.bypass_ru_switch.deselect()
+
         if self.settings.get("minimize_to_tray", True):
             self.tray_checkbox.select()
         else:
@@ -574,9 +594,19 @@ class App(ctk.CTk):
         self.settings["port"] = self.port_entry.get().strip() or "1080"
         self.settings["username"] = self.user_entry.get().strip()
         self.settings["password"] = self.pass_entry.get().strip()
+        self.settings["bypass_ru"] = bool(self.bypass_ru_switch.get())
         self.settings["minimize_to_tray"] = bool(self.tray_checkbox.get())
         self.settings["excluded_processes"] = list(self.excluded_processes)
         core.save_settings(self.settings)
+
+    def _on_bypass_ru_toggle(self):
+        self._save_current_values()
+        is_on = bool(self.bypass_ru_switch.get())
+        state_str = "ВКЛЮЧЕН (сайты РФ идут напрямую)" if is_on else "ВЫКЛЮЧЕН (весь трафик через прокси)"
+        self.log(f"🇷🇺 Обход РФ-доменов: {state_str}")
+        if self.is_connected:
+            self.log("Перезапуск туннеля для применения правила...")
+            self._reload_exclusions()
 
     def log(self, text: str):
         def _append():
@@ -640,7 +670,9 @@ class App(ctk.CTk):
         self.connect_btn.configure(state="disabled", text="ПОДКЛЮЧЕНИЕ...")
         self._set_status("connecting", "Подключение TUN...")
         excl_count = len(self.excluded_processes)
-        self.log(f"--- Запуск подключения к {host}:{port} (Исключений: {excl_count}) ---")
+        bypass_ru = bool(self.bypass_ru_switch.get())
+        ru_status = "ВКЛ" if bypass_ru else "ВЫКЛ"
+        self.log(f"--- Запуск подключения к {host}:{port} (Исключений: {excl_count}, Обход РФ: {ru_status}) ---")
 
         def _bg_connect():
             success, msg = self.proxy_mgr.start(
@@ -649,6 +681,7 @@ class App(ctk.CTk):
                 username=user,
                 password=passwd,
                 excluded_processes=self.excluded_processes,
+                bypass_ru=bypass_ru,
                 log_cb=self.log
             )
             if success:
