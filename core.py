@@ -121,7 +121,6 @@ def save_settings(settings: dict):
 
 RU_DOMAIN_SUFFIXES = [
     ".ru",
-    ".рф",
     ".su",
     ".xn--p1ai",
     "yandex.ru",
@@ -289,7 +288,9 @@ def generate_sing_box_config(host: str, port: int, username: str = "", password:
                 },
                 {
                     "tag": "dns-direct",
-                    "type": "local",
+                    "type": "udp",
+                    "server": "77.88.8.8",
+                    "server_port": 53,
                     "detour": "direct"
                 }
             ],
@@ -306,7 +307,7 @@ def generate_sing_box_config(host: str, port: int, username: str = "", password:
                 "mtu": 1500,
                 "auto_route": True,
                 "strict_route": False,
-                "stack": "gvisor",
+                "stack": "mixed",
                 "endpoint_independent_nat": True
             }
         ],
@@ -381,10 +382,12 @@ class ProxyManager:
                 capture_output=True, text=True, creationflags=subprocess.CREATE_NO_WINDOW
             )
             up_adapters = [a.strip().lower() for a in ps_chk.stdout.splitlines() if a.strip()]
-            conflicts = [a for a in up_adapters if any(k in a for k in ["happ", "xray", "sing-tun", "wireguard", "outline"])]
-            if conflicts and log_cb:
-                log_cb(f"⚠️ ВНИМАНИЕ: Обнаружен другой активный VPN адаптер: {', '.join(conflicts)}!")
-                log_cb("⚠️ Два системных TUN-прокси не могут работать одновременно. Пожалуйста, отключите другой VPN перед запуском!")
+            conflicts = [a for a in up_adapters if any(k in a for k in ["happ", "xray", "wireguard", "outline"]) and "tun0" not in a]
+            if conflicts:
+                msg = f"Обнаружен другой активный VPN ({', '.join(conflicts)}). Пожалуйста, отключите Happ перед запуском ProxyFork!"
+                if log_cb:
+                    log_cb(f"⚠️ {msg}")
+                return False, msg
         except Exception:
             pass
 
