@@ -284,12 +284,27 @@ class App(ctk.CTk):
         self.refresh_ip_btn.pack(side="right", padx=(0, 10))
 
         # Логи
+        log_header = ctk.CTkFrame(self.tab_conn, fg_color="transparent")
+        log_header.pack(fill="x", padx=10, pady=(2, 2))
+
         ctk.CTkLabel(
-            self.tab_conn,
+            log_header,
             text="Журнал работы",
             font=ctk.CTkFont(size=11, weight="bold"),
             text_color="#8b949e"
-        ).pack(anchor="w", padx=10, pady=(2, 2))
+        ).pack(side="left")
+
+        self.copy_log_btn = ctk.CTkButton(
+            log_header,
+            text="📋 Скопировать лог",
+            width=125,
+            height=22,
+            font=ctk.CTkFont(size=11),
+            fg_color="#21262d",
+            hover_color="#30363d",
+            command=self._copy_logs
+        )
+        self.copy_log_btn.pack(side="right")
 
         self.log_textbox = ctk.CTkTextbox(
             self.tab_conn,
@@ -615,6 +630,23 @@ class App(ctk.CTk):
             self.log_textbox.see("end")
             self.log_textbox.configure(state="disabled")
         self.after(0, _append)
+
+    def _copy_logs(self):
+        """Копирует полный текст журнала работы в буфер обмена."""
+        try:
+            log_text = self.log_textbox.get("1.0", "end-1c").strip()
+            if not log_text:
+                self.copy_log_btn.configure(text="Лог пуст", fg_color="#30363d")
+                self.after(1500, lambda: self.copy_log_btn.configure(text="📋 Скопировать лог", fg_color="#21262d"))
+                return
+
+            self.clipboard_clear()
+            self.clipboard_append(log_text)
+            self.update()
+            self.copy_log_btn.configure(text="✅ Скопировано!", fg_color="#238636")
+            self.after(1500, lambda: self.copy_log_btn.configure(text="📋 Скопировать лог", fg_color="#21262d"))
+        except Exception as e:
+            print(f"Error copying logs: {e}")
 
     def _update_ip_display(self):
         self.after(0, lambda: self.ip_value_label.configure(text="Определение...", text_color="#8b949e"))
