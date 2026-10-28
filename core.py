@@ -120,8 +120,11 @@ def save_settings(settings: dict):
 
 
 RU_DOMAIN_SUFFIXES = [
+    "ru",
     ".ru",
+    "su",
     ".su",
+    "xn--p1ai",
     ".xn--p1ai",
     "yandex.ru",
     "ya.ru",
@@ -185,6 +188,11 @@ def generate_sing_box_config(host: str, port: int, username: str = "", password:
             "network": "udp",
             "port": [443],
             "action": "reject"
+        },
+        {
+            # Сниффинг домена (TLS SNI и HTTP Host), чтобы sing-box в TUN режиме
+            # определял домен сайта из заголовков соединения для правил domain_suffix
+            "action": "sniff"
         }
     ]
 
