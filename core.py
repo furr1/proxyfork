@@ -354,9 +354,40 @@ def format_speed(bps: int) -> str:
         return f"{bps / (1024 * 1024):.1f} MB/s"
 
 
+_active_proxy_mgr = None
+
+
+def _cleanup_active_proxy():
+    global _active_proxy_mgr
+    if _active_proxy_mgr and _active_proxy_mgr.is_running:
+        _active_proxy_mgr.stop()
+
+
+# Регистрируем автоматическую очистку при завершении Python-процесса
+import atexit
+atexit.register(_cleanup_active_proxy)
+
+# Регистрируем обработчик системного выключения Windows (Logoff / Shutdown)
+try:
+    from ctypes import wintypes
+    _HandlerRoutine = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.DWORD)
+
+    def _win_shutdown_handler(ctrl_type):
+        if ctrl_type in (2, 5, 6):  # CTRL_CLOSE_EVENT, CTRL_LOGOFF_EVENT, CTRL_SHUTDOWN_EVENT
+            _cleanup_active_proxy()
+        return True
+
+    _global_ctrl_cb = _HandlerRoutine(_win_shutdown_handler)
+    ctypes.windll.kernel32.SetConsoleCtrlHandler(_global_ctrl_cb, True)
+except Exception:
+    pass
+
+
 class ProxyManager:
     """Менеджер процесса sing-box."""
     def __init__(self):
+        global _active_proxy_mgr
+        _active_proxy_mgr = self
         self.process: subprocess.Popen | None = None
         self.is_running = False
         self.log_callback = None
@@ -364,6 +395,8 @@ class ProxyManager:
         self._reader_thread = None
         self._traffic_thread = None
         self._stop_traffic = False
+        self._started_event = threading.Event()
+        self._last_error = ""
 
     def start(self, host: str, port: int, username: str = "", password: str = "", excluded_processes: list = None, bypass_ru: bool = True, log_cb=None) -> tuple[bool, str]:
         if self.is_running:
@@ -373,12 +406,26 @@ class ProxyManager:
             return False, f"Файл sing-box.exe не найден по пути: {SING_BOX_EXE}"
 
         self.log_callback = log_cb
-        self._stop_traffic = False
+        return self._start_with_retry(
+            host=host,
+            port=port,
+            username=username,
+            password=password,
+            excluded_processes=excluded_processes,
+            bypass_ru=bypass_ru,
+            log_cb=log_cb,
+            retries_left=2
+        )
 
-        # Гарантируем отсутствие зависших экземпляров перед стартом
+    def _start_with_retry(self, host: str, port: int, username: str = "", password: str = "", excluded_processes: list = None, bypass_ru: bool = True, log_cb=None, retries_left: int = 2) -> tuple[bool, str]:
+        self._stop_traffic = False
+        self._started_event.clear()
+        self._last_error = ""
+
+        # Мягко останавливаем возможные зависшие экземпляры перед стартом
         try:
             subprocess.run(["taskkill", "/F", "/IM", "sing-box.exe"], capture_output=True, creationflags=subprocess.CREATE_NO_WINDOW)
-            time.sleep(0.3)
+            time.sleep(0.2)
         except Exception:
             pass
 
@@ -403,7 +450,7 @@ class ProxyManager:
             with open(CONFIG_PATH, "w", encoding="utf-8") as f:
                 json.dump(config, f, indent=2, ensure_ascii=False)
 
-            # Проверка конфига перед запуском (в полностью скрытом режиме без всплывающего окна)
+            # Проверка конфига перед запуском
             check_res = subprocess.run(
                 [SING_BOX_EXE, "check", "-c", CONFIG_PATH],
                 capture_output=True,
@@ -416,6 +463,9 @@ class ProxyManager:
                 return False, f"Ошибка конфигурации: {err_msg}"
 
             # Запуск sing-box в скрытом фоновом процессе с поддержкой мягких сигналов (CREATE_NEW_PROCESS_GROUP)
+            # ВАЖНО: не передавать CREATE_NO_WINDOW, иначе Windows не создаст консоль,
+            # и GenerateConsoleCtrlEvent не сможет мягко остановить sing-box.
+            # SW_HIDE полностью и без всплывающих окон скрывает консоль.
             startupinfo = subprocess.STARTUPINFO()
             startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
             startupinfo.wShowWindow = subprocess.SW_HIDE
@@ -428,7 +478,7 @@ class ProxyManager:
                 bufsize=1,
                 cwd=BIN_DIR,
                 startupinfo=startupinfo,
-                creationflags=subprocess.CREATE_NO_WINDOW | subprocess.CREATE_NEW_PROCESS_GROUP
+                creationflags=subprocess.CREATE_NEW_PROCESS_GROUP
             )
             self.is_running = True
 
@@ -436,17 +486,55 @@ class ProxyManager:
             self._reader_thread = threading.Thread(target=self._read_logs, daemon=True)
             self._reader_thread.start()
 
-            # Поток считывания скорости сети в реальном времени
-            self._traffic_thread = threading.Thread(target=self._read_traffic, daemon=True)
-            self._traffic_thread.start()
+            # Ждем реального подтверждения запуска от sing-box (до 4.5 сек)
+            t0 = time.time()
+            started = False
+            while time.time() - t0 < 5.0:
+                if self._started_event.is_set():
+                    started = True
+                    break
+                if self.process.poll() is not None:
+                    # Процесс завершился с ошибкой
+                    break
+                time.sleep(0.1)
 
-            # Даем секунду на проверку, не упал ли сразу
-            time.sleep(1.0)
-            if self.process.poll() is not None:
-                self.is_running = False
-                return False, "Процесс завершился с ошибкой сразу после старта"
+            if started:
+                # Поток считывания скорости сети в реальном времени
+                self._traffic_thread = threading.Thread(target=self._read_traffic, daemon=True)
+                self._traffic_thread.start()
+                return True, "Подключение успешно установлено"
 
-            return True, "Подключение успешно установлено"
+            # Процесс не запустился
+            self.is_running = False
+
+            # Проверяем причину: фантомный адаптер Wintun из прошлой сессии
+            is_wintun_ghost = any(
+                phrase in self._last_error for phrase in [
+                    "Cannot create a file when that file already exists",
+                    "open existing adapter: Element not found",
+                    "configure tun interface"
+                ]
+            )
+
+            if is_wintun_ghost and retries_left > 0:
+                if log_cb:
+                    log_cb("🔄 Обнаружен фантомный адаптер Wintun после предыдущей сессии. Очистка и автоматический повтор...")
+                self.stop()
+                time.sleep(1.2)
+                return self._start_with_retry(
+                    host=host,
+                    port=port,
+                    username=username,
+                    password=password,
+                    excluded_processes=excluded_processes,
+                    bypass_ru=bypass_ru,
+                    log_cb=log_cb,
+                    retries_left=retries_left - 1
+                )
+
+            self.stop()
+            err_msg = self._last_error or "Процесс завершился с ошибкой сразу после старта"
+            return False, err_msg
 
         except Exception as e:
             self.is_running = False
@@ -482,7 +570,16 @@ class ProxyManager:
                     if not line:
                         break
                     clean_line = line.strip()
-                    if clean_line and self.log_callback:
+                    if not clean_line:
+                        continue
+
+                    # Проверяем успешную активацию TUN интерфейса
+                    if "sing-box started" in clean_line or "started at tun" in clean_line:
+                        self._started_event.set()
+                    elif "FATAL" in clean_line or "fatal" in clean_line or "ERROR" in clean_line:
+                        self._last_error = clean_line
+
+                    if self.log_callback:
                         self.log_callback(clean_line)
         except Exception:
             pass
