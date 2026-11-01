@@ -422,26 +422,34 @@ class ProxyManager:
         self._started_event.clear()
         self._last_error = ""
 
-        # Мягко останавливаем возможные зависшие экземпляры перед стартом
+        # Проверяем, есть ли уже запущенный процесс sing-box
         try:
-            subprocess.run(["taskkill", "/F", "/IM", "sing-box.exe"], capture_output=True, creationflags=subprocess.CREATE_NO_WINDOW)
-            time.sleep(0.2)
+            chk = subprocess.run(
+                ["tasklist", "/FI", "IMAGENAME eq sing-box.exe"],
+                capture_output=True,
+                text=True,
+                creationflags=subprocess.CREATE_NO_WINDOW
+            )
+            if "sing-box.exe" in chk.stdout:
+                subprocess.run(
+                    ["taskkill", "/F", "/IM", "sing-box.exe"],
+                    capture_output=True,
+                    creationflags=subprocess.CREATE_NO_WINDOW
+                )
+                time.sleep(0.8)
         except Exception:
             pass
 
-        # Проверка на наличие других активных L3 TUN/VPN адаптеров (Happ, Xray, WireGuard, Outline и др.)
+        # Быстрая проверка на наличие активного Happ / Xray адаптера (через netsh за ~0.02 сек)
         try:
-            ps_chk = subprocess.run(
-                ["powershell", "-NoProfile", "-Command", "Get-NetAdapter | Where-Object Status -eq Up | Select-Object -ExpandProperty Name"],
-                capture_output=True, text=True, creationflags=subprocess.CREATE_NO_WINDOW
+            netsh_res = subprocess.run(
+                ["netsh", "interface", "show", "interface"],
+                capture_output=True,
+                text=True,
+                creationflags=subprocess.CREATE_NO_WINDOW
             )
-            up_adapters = [a.strip().lower() for a in ps_chk.stdout.splitlines() if a.strip()]
-            conflicts = [a for a in up_adapters if any(k in a for k in ["happ", "xray", "wireguard", "outline"]) and "tun0" not in a]
-            if conflicts:
-                msg = f"Обнаружен другой активный VPN ({', '.join(conflicts)}). Пожалуйста, отключите Happ перед запуском ProxyFork!"
-                if log_cb:
-                    log_cb(f"⚠️ {msg}")
-                return False, msg
+            if "happ-xray" in netsh_res.stdout.lower() and log_cb:
+                log_cb("⚠️ Внимание: в системе активен адаптер happ-xray (Happ). Если оба VPN работают в TUN-режиме, отключите Happ во избежание конфликта маршрутов.")
         except Exception:
             pass
 
@@ -486,15 +494,18 @@ class ProxyManager:
             self._reader_thread = threading.Thread(target=self._read_logs, daemon=True)
             self._reader_thread.start()
 
-            # Ждем реального подтверждения запуска от sing-box (до 4.5 сек)
+            # Ждем реального подтверждения запуска от sing-box (до 20 сек).
+            # Создание Wintun адаптера и привязка NDIS в Windows занимает в среднем 6-10 сек.
+            # Как только sing-box выдаст готовность, флаг _started_event прерывает ожидание мгновенно.
             t0 = time.time()
             started = False
-            while time.time() - t0 < 5.0:
+            while time.time() - t0 < 20.0:
                 if self._started_event.is_set():
                     started = True
                     break
                 if self.process.poll() is not None:
-                    # Процесс завершился с ошибкой
+                    # Процесс завершился с ошибкой (например, FATAL)
+                    time.sleep(0.3)  # даем потоку чтения логов дочитать вывод
                     break
                 time.sleep(0.1)
 
@@ -508,19 +519,22 @@ class ProxyManager:
             self.is_running = False
 
             # Проверяем причину: фантомный адаптер Wintun из прошлой сессии
+            err_lower = (self._last_error or "").lower()
             is_wintun_ghost = any(
-                phrase in self._last_error for phrase in [
-                    "Cannot create a file when that file already exists",
-                    "open existing adapter: Element not found",
-                    "configure tun interface"
+                phrase in err_lower for phrase in [
+                    "cannot create a file when that file already exists",
+                    "element not found",
+                    "configure tun interface",
+                    "open existing adapter"
                 ]
             )
 
             if is_wintun_ghost and retries_left > 0:
+                attempt_num = 3 - retries_left
                 if log_cb:
-                    log_cb("🔄 Обнаружен фантомный адаптер Wintun после предыдущей сессии. Очистка и автоматический повтор...")
+                    log_cb(f"🔄 Адаптер Wintun освобождается Windows. Ожидание и автоповтор (попытка {attempt_num}/2)...")
                 self.stop()
-                time.sleep(1.2)
+                time.sleep(2.0)
                 return self._start_with_retry(
                     host=host,
                     port=port,
@@ -533,7 +547,12 @@ class ProxyManager:
                 )
 
             self.stop()
-            err_msg = self._last_error or "Процесс завершился с ошибкой сразу после старта"
+            if self._last_error:
+                err_msg = self._last_error
+            elif self.process and self.process.poll() is not None:
+                err_msg = f"Процесс завершился с кодом ошибки {self.process.returncode}"
+            else:
+                err_msg = "Превышено время ожидания запуска TUN интерфейса (20 сек)"
             return False, err_msg
 
         except Exception as e:
@@ -573,11 +592,15 @@ class ProxyManager:
                     if not clean_line:
                         continue
 
+                    # Очищаем ANSI escape коды для надежного сопоставления
+                    plain_line = re.sub(r'\x1b\[[0-9;]*[a-zA-Z]', '', clean_line)
+                    lower_line = plain_line.lower()
+
                     # Проверяем успешную активацию TUN интерфейса
-                    if "sing-box started" in clean_line or "started at tun" in clean_line:
+                    if "sing-box started" in lower_line or "started at tun" in lower_line or "started at" in lower_line:
                         self._started_event.set()
-                    elif "FATAL" in clean_line or "fatal" in clean_line or "ERROR" in clean_line:
-                        self._last_error = clean_line
+                    elif "fatal" in lower_line or "error" in lower_line:
+                        self._last_error = plain_line
 
                     if self.log_callback:
                         self.log_callback(clean_line)
