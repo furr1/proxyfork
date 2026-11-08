@@ -156,7 +156,34 @@ RU_DOMAIN_SUFFIXES = [
 
 def generate_sing_box_config(host: str, port: int, username: str = "", password: str = "", excluded_processes: list = None, bypass_ru: bool = True) -> dict:
     """Генерирует конфигурацию sing-box 1.14 для TUN режима со всеми приложениями, UDP, списком исключений и обходом РФ."""
-    
+    host = host.strip()
+    # Защита от случайной вставки хоста с портом (например, 185.168.251.70:8000)
+    for proto in ("socks5://", "socks://", "http://", "https://"):
+        if host.lower().startswith(proto):
+            host = host[len(proto):]
+            break
+
+    if "@" in host:
+        auth_part, host_part = host.split("@", 1)
+        if ":" in auth_part and not username:
+            username, password = auth_part.split(":", 1)
+        elif not username:
+            username = auth_part
+        host = host_part
+
+    if ":" in host:
+        parts = host.split(":")
+        if len(parts) == 4 and not username:
+            host, cand_p, username, password = parts
+            if cand_p.isdigit():
+                port = int(cand_p)
+        elif len(parts) == 2:
+            cand_h, cand_p = parts
+            if cand_p.isdigit():
+                host = cand_h
+                if not port or port == 1080 or port == int(cand_p):
+                    port = int(cand_p)
+
     socks_outbound = {
         "type": "socks",
         "tag": "proxy-out",

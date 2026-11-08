@@ -157,6 +157,8 @@ class App(ctk.CTk):
         ctk.CTkLabel(h_box, text="Хост / IP:", font=ctk.CTkFont(size=12), text_color="#8b949e").pack(anchor="w")
         self.host_entry = ctk.CTkEntry(h_box, placeholder_text="194.87.x.x или домен", height=32)
         self.host_entry.pack(fill="x", pady=(2, 0))
+        self.host_entry.bind("<FocusOut>", self._auto_parse_host_input)
+        self.host_entry.bind("<KeyRelease>", lambda e: self._auto_parse_host_input() if ":" in self.host_entry.get() else None)
 
         p_box = ctk.CTkFrame(hp_frame, fg_color="transparent")
         p_box.pack(side="right")
@@ -675,6 +677,51 @@ class App(ctk.CTk):
                 self.tray_icon.icon = create_tray_image(self.is_connected)
         self.after(0, _apply)
 
+    def _auto_parse_host_input(self, event=None):
+        """Автоматически парсит строки прокси формата host:port, host:port:user:pass или user:pass@host:port."""
+        try:
+            raw_host = self.host_entry.get().strip()
+            if not raw_host:
+                return
+
+            cleaned = raw_host
+            for proto in ("socks5://", "socks://", "http://", "https://"):
+                if cleaned.lower().startswith(proto):
+                    cleaned = cleaned[len(proto):]
+                    break
+
+            user = ""
+            passwd = ""
+            if "@" in cleaned:
+                auth_part, host_part = cleaned.split("@", 1)
+                if ":" in auth_part:
+                    user, passwd = auth_part.split(":", 1)
+                else:
+                    user = auth_part
+                cleaned = host_part
+
+            parts = cleaned.split(":")
+            port = ""
+            host = cleaned
+            if len(parts) == 4:
+                host, port, user, passwd = parts
+            elif len(parts) == 2:
+                host, port = parts
+
+            if port and port.isdigit():
+                self.host_entry.delete(0, "end")
+                self.host_entry.insert(0, host.strip())
+                self.port_entry.delete(0, "end")
+                self.port_entry.insert(0, port.strip())
+                if user:
+                    self.user_entry.delete(0, "end")
+                    self.user_entry.insert(0, user.strip())
+                if passwd:
+                    self.pass_entry.delete(0, "end")
+                    self.pass_entry.insert(0, passwd.strip())
+        except Exception:
+            pass
+
     def _toggle_connection(self):
         if self.is_connected:
             self._disconnect()
@@ -682,6 +729,7 @@ class App(ctk.CTk):
             self._connect()
 
     def _connect(self):
+        self._auto_parse_host_input()
         host = self.host_entry.get().strip()
         port_str = self.port_entry.get().strip()
         user = self.user_entry.get().strip()
